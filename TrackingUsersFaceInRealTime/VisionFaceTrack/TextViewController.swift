@@ -13,7 +13,8 @@ import Vision
 class TextViewController: UIViewController {
     
     @IBOutlet weak var imageView: UIImageView!
-
+    var session = AVCaptureSession()
+    var requests = [VNRequest]()
     
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -32,6 +33,24 @@ class TextViewController: UIViewController {
     }
     
     func startLiveVideo() {
+        //1
+        session.sessionPreset = AVCaptureSession.Preset.photo
+        let captureDevice = AVCaptureDevice.default(for: AVMediaType.video)
+        
+        //2
+        let deviceInput = try! AVCaptureDeviceInput(device: captureDevice!)
+        let deviceOutput = AVCaptureVideoDataOutput()
+        deviceOutput.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA)]
+        deviceOutput.setSampleBufferDelegate(self, queue: DispatchQueue.global(qos: DispatchQoS.QoSClass.default))
+        session.addInput(deviceInput)
+        session.addOutput(deviceOutput)
+        
+        //3
+        let imageLayer = AVCaptureVideoPreviewLayer(session: session)
+        imageLayer.frame = imageView.bounds
+        imageView.layer.addSublayer(imageLayer)
+        
+        session.startRunning()
     }
     
     override func viewDidLayoutSubviews() {
@@ -39,9 +58,35 @@ class TextViewController: UIViewController {
     }
     
     func startTextDetection() {
+        let textRequest = VNDetectTextRectanglesRequest(completionHandler: self.detectTextHandler)
+        textRequest.reportCharacterBoxes = true
+        self.requests = [textRequest]
     }
     
     func detectTextHandler(request: VNRequest, error: Error?) {
+        guard let observations = request.results else {
+            print("no result")
+            return
+        }
+        
+        let result = observations.map({$0 as? VNTextObservation})
+        
+        DispatchQueue.main.async() {
+            self.imageView.layer.sublayers?.removeSubrange(1...)
+            for region in result {
+                guard let rg = region else {
+                    continue
+                }
+                
+                self.highlightWord(box: rg)
+                
+                if let boxes = region?.characterBoxes {
+                    for characterBox in boxes {
+                        self.highlightLetters(box: characterBox)
+                    }
+                }
+            }
+        }
     }
     
     func highlightWord(box: VNTextObservation) {
@@ -98,5 +143,24 @@ class TextViewController: UIViewController {
 }
 
 extension TextViewController: AVCaptureVideoDataOutputSampleBufferDelegate {
+    func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+        guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
+            return
+        }
+        
+        var requestOptions:[VNImageOption : Any] = [:]
+        
+        if let camData = CMGetAttachment(sampleBuffer, key: kCMSampleBufferAttachmentKey_CameraIntrinsicMatrix, attachmentModeOut: nil) {
+            requestOptions = [.cameraIntrinsics:camData]
+        }
+        
+        let imageRequestHandler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: CGImagePropertyOrientation(rawValue: 6)!, options: requestOptions)
+        
+        do {
+            try imageRequestHandler.perform(self.requests)
+        } catch {
+            print(error)
+        }
+    }
 
 }
